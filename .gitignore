@@ -1,0 +1,8 @@
+fal-env/
+outputs/
+usage_raw.json
+zimage_turbo_test_*.json
+.env
+.env.*
+*.key
+*.pem

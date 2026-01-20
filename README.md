@@ -1,6 +1,6 @@
 # Z-Image Pro : Studio
 
-fal.ai Z-Image Turbo를 사용해 이미지를 생성하는 Streamlit 앱입니다.
+fal.ai Z-Image Turbo를 테스트를 위한 이미지 생성 Streamlit 앱입니다.
 
 ## 주요 기능
 - 프롬프트 기반 이미지 생성 (fal.ai Model API)

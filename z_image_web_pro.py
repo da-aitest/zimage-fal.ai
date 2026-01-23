@@ -8,6 +8,7 @@ import requests
 import streamlit as st
 
 PRICE_PER_MP = 0.005
+LOG_DIR = "logs"
 
 ASPECT_RATIOS = {
     "Default": (1024, 1024),
@@ -35,6 +36,28 @@ def fetch_image_bytes(image_url: str) -> bytes | None:
         return response.content
     except Exception:
         return None
+
+
+def parse_index_filter(text: str) -> set[int]:
+    """예: '1,3,5-7' -> {1,3,5,6,7}"""
+    if not text:
+        return set()
+    indices: set[int] = set()
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_str, end_str = part.split("-", 1)
+            if start_str.strip().isdigit() and end_str.strip().isdigit():
+                start = int(start_str)
+                end = int(end_str)
+                if start > end:
+                    start, end = end, start
+                indices.update(range(start, end + 1))
+        elif part.isdigit():
+            indices.add(int(part))
+    return indices
 
 
 def generate_image_fal(
@@ -70,6 +93,34 @@ def generate_image_fal(
     return image_url, inference_time
 
 
+def ensure_log_dir() -> str:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    return LOG_DIR
+
+
+def write_log_file(
+    log_lines: list[str],
+    settings_payload: dict,
+    results_payload: dict,
+) -> str:
+    ensure_log_dir()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_path = os.path.join(LOG_DIR, f"zimage_log_{timestamp}.json")
+    with open(file_path, "w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "timestamp": timestamp,
+                "settings": settings_payload,
+                "results": results_payload,
+                "log_lines": log_lines,
+            },
+            file,
+            ensure_ascii=False,
+            indent=2,
+        )
+    return file_path
+
+
 def main() -> None:
     st.set_page_config(page_title="Z-Image Pro", page_icon="🚀", layout="wide")
 
@@ -97,6 +148,10 @@ def main() -> None:
         st.session_state.total_tasks = 0
     if "mode_label" not in st.session_state:
         st.session_state.mode_label = ""
+    if "elapsed_seconds" not in st.session_state:
+        st.session_state.elapsed_seconds = 0.0
+    if "total_seconds" not in st.session_state:
+        st.session_state.total_seconds = 0.0
 
     if "prompt" not in st.session_state:
         st.session_state.prompt = (
@@ -207,10 +262,15 @@ def main() -> None:
         render_seq = st.session_state.render_seq
         with summary_area.container():
             if st.session_state.is_running:
-                st.info(
+                progress_text = (
                     f"작업 중 · {st.session_state.mode_label} · "
                     f"{st.session_state.current_task}번째 진행"
                 )
+                if st.session_state.mode_label.startswith("시간 기준"):
+                    elapsed = st.session_state.elapsed_seconds
+                    remaining = max(st.session_state.total_seconds - elapsed, 0)
+                    progress_text += f" · 경과 {elapsed:.0f}s / 남음 {remaining:.0f}s"
+                st.info(progress_text)
             elif st.session_state.total_tasks:
                 st.info(
                     f"작업 완료 · {st.session_state.mode_label} · "
@@ -226,71 +286,6 @@ def main() -> None:
                 with metric_col3:
                     st.metric(st.session_state.speed_label, st.session_state.speed_value)
 
-        if st.session_state.images_history and not st.session_state.is_running:
-            with gallery_area.container():
-                st.subheader("📸 실시간 갤러리 (최신순)")
-                images_history = sorted(
-                    st.session_state.images_history,
-                    key=lambda item: item.get("index", 0),
-                )
-                if len(images_history) == 1:
-                    item = images_history[0]
-                    image_index = item.get("index", 1)
-                    st.image(
-                        item["url"],
-                        caption=f"{image_index}번 · ⏱️{item['time']:.2f}s",
-                        width=900,
-                    )
-                    file_bytes = fetch_image_bytes(item["url"])
-                    if file_bytes:
-                        st.download_button(
-                            label=f"💾 {item['filename']}",
-                            data=file_bytes,
-                            file_name=item["filename"],
-                            mime="image/png",
-                            key=f"download_single_{render_seq}_{item['filename']}",
-                        )
-                elif len(images_history) == 2:
-                    cols = st.columns(2)
-                    for col_idx, item in enumerate(images_history):
-                        with cols[col_idx]:
-                            image_index = item.get("index", col_idx + 1)
-                            st.image(
-                                item["url"],
-                                caption=f"{image_index}번 · ⏱️{item['time']:.2f}s",
-                                width=520,
-                            )
-                            file_bytes = fetch_image_bytes(item["url"])
-                            if file_bytes:
-                                st.download_button(
-                                    label=f"💾 {item['filename']}",
-                                    data=file_bytes,
-                                    file_name=item["filename"],
-                                    mime="image/png",
-                                    key=f"download_{render_seq}_2_{col_idx}",
-                                )
-                else:
-                    for row_start in range(0, len(images_history), 3):
-                        row_items = images_history[row_start : row_start + 3]
-                        cols = st.columns(3)
-                        for col_idx, item in enumerate(row_items):
-                            with cols[col_idx]:
-                                image_index = item.get("index", col_idx + 1)
-                                st.image(
-                                    item["url"],
-                                    caption=f"{image_index}번 · ⏱️{item['time']:.2f}s",
-                                    width=300,
-                                )
-                                file_bytes = fetch_image_bytes(item["url"])
-                                if file_bytes:
-                                    st.download_button(
-                                        label=f"💾 {item['filename']}",
-                                        data=file_bytes,
-                                        file_name=item["filename"],
-                                        mime="image/png",
-                                        key=f"download_{render_seq}_{row_start}_{col_idx}",
-                                    )
-
         with log_area.container():
             st.subheader("🧾 로그")
             if st.session_state.log_lines and not st.session_state.is_running:
@@ -299,6 +294,84 @@ def main() -> None:
                 st.caption("작업 진행 중입니다. 완료 후 요약 로그가 표시됩니다.")
             else:
                 st.caption("작업 완료 후 요약 로그가 표시됩니다.")
+
+        if st.session_state.images_history and not st.session_state.is_running:
+            with gallery_area.container():
+                with st.expander("📸 이미지 보기", expanded=False):
+                    st.caption("검색 예시: 1,3,5-7")
+                    filter_text = st.text_input(
+                        "이미지 번호 필터",
+                        placeholder="예: 1,3,5-7",
+                        key="image_filter_text",
+                    )
+                    selected_indices = parse_index_filter(filter_text)
+                    images_history = sorted(
+                        st.session_state.images_history,
+                        key=lambda item: item.get("index", 0),
+                    )
+                    if selected_indices:
+                        images_history = [
+                            item
+                            for item in images_history
+                            if item.get("index") in selected_indices
+                        ]
+                    if len(images_history) == 1:
+                        item = images_history[0]
+                        image_index = item.get("index", 1)
+                        st.image(
+                            item["url"],
+                            caption=f"{image_index}번 · ⏱️{item['time']:.2f}s",
+                            width=900,
+                        )
+                        file_bytes = fetch_image_bytes(item["url"])
+                        if file_bytes:
+                            st.download_button(
+                                label=f"💾 {item['filename']}",
+                                data=file_bytes,
+                                file_name=item["filename"],
+                                mime="image/png",
+                                key=f"download_single_{render_seq}_{item['filename']}",
+                            )
+                    elif len(images_history) == 2:
+                        cols = st.columns(2)
+                        for col_idx, item in enumerate(images_history):
+                            with cols[col_idx]:
+                                image_index = item.get("index", col_idx + 1)
+                                st.image(
+                                    item["url"],
+                                    caption=f"{image_index}번 · ⏱️{item['time']:.2f}s",
+                                    width=520,
+                                )
+                                file_bytes = fetch_image_bytes(item["url"])
+                                if file_bytes:
+                                    st.download_button(
+                                        label=f"💾 {item['filename']}",
+                                        data=file_bytes,
+                                        file_name=item["filename"],
+                                        mime="image/png",
+                                        key=f"download_{render_seq}_2_{col_idx}",
+                                    )
+                    else:
+                        for row_start in range(0, len(images_history), 3):
+                            row_items = images_history[row_start : row_start + 3]
+                            cols = st.columns(3)
+                            for col_idx, item in enumerate(row_items):
+                                with cols[col_idx]:
+                                    image_index = item.get("index", col_idx + 1)
+                                    st.image(
+                                        item["url"],
+                                        caption=f"{image_index}번 · ⏱️{item['time']:.2f}s",
+                                        width=300,
+                                    )
+                                    file_bytes = fetch_image_bytes(item["url"])
+                                    if file_bytes:
+                                        st.download_button(
+                                            label=f"💾 {item['filename']}",
+                                            data=file_bytes,
+                                            file_name=item["filename"],
+                                            mime="image/png",
+                                            key=f"download_{render_seq}_{row_start}_{col_idx}",
+                                        )
 
     if start_btn:
         if not os.environ.get("FAL_KEY"):
@@ -313,6 +386,8 @@ def main() -> None:
         st.session_state.current_task = 0
         st.session_state.total_tasks = target_val
         st.session_state.mode_label = "장수 기준" if not is_time_mode else f"시간 기준 {target_val}초"
+        st.session_state.elapsed_seconds = 0.0
+        st.session_state.total_seconds = float(target_val) if is_time_mode else 0.0
 
         start_time = time.time()
         generated_count = 0
@@ -323,6 +398,7 @@ def main() -> None:
         try:
             while True:
                 elapsed = time.time() - start_time
+                st.session_state.elapsed_seconds = elapsed
 
                 if is_time_mode:
                     if elapsed >= target_val:
@@ -415,6 +491,17 @@ def main() -> None:
         start_time_str = datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S")
         end_time_str = datetime.fromtimestamp(end_time).strftime("%Y-%m-%d %H:%M:%S")
         cold_boots = sum(1 for r in results if r["time"] >= 2.0)
+        settings_payload = {
+            "prompt": prompt,
+            "ratio_name": ratio_name,
+            "width": int(width),
+            "height": int(height),
+            "steps": steps,
+            "seed_input": seed_input,
+            "mode": "장수 기준" if not is_time_mode else "시간 기준",
+            "target_value": int(target_val),
+        }
+
         log_lines = [
             f"\n{'=' * 60}",
             "📊 테스트 결과 요약",
@@ -438,18 +525,32 @@ def main() -> None:
             f"  이미지당 비용: ${cost_per_image:.4f}",
             f"  이번 테스트 총 비용: ${total_test_cost:.4f} ({len(successful)}장)",
             f"  시간당 예상 비용: ${cost_per_hour:.2f}",
-            f"{'=' * 60}\n",
-            "📋 상세 결과:",
-            f"{'테스트':<8} {'시간(초)':<10} {'이미지명':<24} {'상태':<8}",
-            "-" * 60,
+            "\n✅ 결과 요약:",
+            f"  성공: {len(successful)}장",
+            f"  실패: {len(results) - len(successful)}장",
         ]
-        for idx, result in enumerate(results, start=1):
-            status = "✓ 성공" if result["success"] else "✗ 실패"
-            log_lines.append(
-                f"{idx:<8} {result['time']:<10.2f} {result['filename']:<24} {status:<8}"
-            )
 
+        results_payload = {
+            "total": len(results),
+            "success": len(successful),
+            "failed": len(results) - len(successful),
+            "avg_time": avg_time,
+            "min_time": min_time,
+            "max_time": max_time,
+            "std_dev": std_dev,
+            "images_per_hour": images_per_hour,
+            "megapixels": megapixels,
+            "cost_per_image": cost_per_image,
+            "total_test_cost": total_test_cost,
+            "cost_per_hour": cost_per_hour,
+            "start_time": start_time_str,
+            "end_time": end_time_str,
+            "total_elapsed": total_elapsed,
+            "cold_boots": cold_boots,
+        }
+        log_file_path = write_log_file(log_lines, settings_payload, results_payload)
         st.session_state.log_lines = log_lines
+        st.session_state.log_file_path = log_file_path
         st.session_state.is_running = False
         st.session_state.total_tasks = len(results)
 
@@ -461,6 +562,11 @@ def main() -> None:
 
     if not start_btn:
         render_outputs()
+
+    if not st.session_state.is_running and getattr(st.session_state, "log_file_path", ""):
+        with st.container():
+            st.subheader("📁 로그 파일 위치")
+            st.info(os.path.abspath(st.session_state.log_file_path))
 
 
 if __name__ == "__main__":
